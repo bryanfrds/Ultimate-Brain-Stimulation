@@ -40,7 +40,7 @@ app_url() {
   case "$1" in
     instagram) echo "https://www.instagram.com/reels/" ;;
     tiktok)    echo "https://www.tiktok.com/foryou" ;;
-    douyin)    echo "https://www.douyin.com/" ;;
+    douyin)    echo "https://www.douyin.com/?recommend=1" ;;
   esac
 }
 
