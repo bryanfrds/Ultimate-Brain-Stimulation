@@ -42,6 +42,10 @@ Log in to Instagram, TikTok, or Douyin in the browser once. Douyin login uses a 
 
 A brain icon in your menu bar to turn scrolling on or off and pick the app, without editing files. The icon fills in while it's scrolling.
 
+By default the feed plays in a **small floating window on the right side of your screen** instead of in Chrome. It appears while Claude works and hides when Claude is done. Your terminal stays in front the whole time, so you can keep reading and typing. Drag or resize the popup and it remembers where you put it. Choose **Show it in → Chrome tab** for the old behavior.
+
+The popup has its own login, separate from Chrome. Use **Show Popup Now** in the menu to open it and log in once. The menu bar app has to be running for the popup to appear.
+
 ```bash
 ~/ultimate-brain-stimulation/menubar/build.sh
 open ~/Applications/"Ultimate Brain Stimulation.app"

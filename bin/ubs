@@ -22,6 +22,7 @@ BROWSER="Google Chrome"  # any Chromium browser with AppleScript support
 STALE_MINUTES=10         # stop if no hook has fired for this long (e.g. you pressed Esc)
 PAUSE_ON_STOP=1          # pause the video when Claude is done (TikTok and Douyin only)
 RETURN_TO_TERMINAL=1     # bring your terminal back to the front when Claude is done
+SHOW_IN=popup            # popup (floating window from the menu bar app) | browser (Chrome tab)
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 DRY_RUN="${UBS_DRY_RUN:-0}"
@@ -251,6 +252,16 @@ cmd_start() {
     return 0
   fi
   touch "$SESSIONS_DIR/$id"
+  # In popup mode the menu bar app watches the session files and shows the feed;
+  # all that's needed here is which app to show.
+  if [ "$SHOW_IN" != browser ]; then
+    if [ "$reason" = prompt ] || [ ! -s "$STATE_DIR/current_app" ]; then
+      app=$(pick_app "$reason")
+      [ -n "$(app_url "$app")" ] && echo "$app" > "$STATE_DIR/current_app"
+    fi
+    unlock
+    return 0
+  fi
   if scroller_pid >/dev/null; then
     unlock
     return 0

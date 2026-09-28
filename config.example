@@ -19,3 +19,6 @@ PAUSE_ON_STOP=1
 
 # 1 = bring your terminal back to the front when Claude is done.
 RETURN_TO_TERMINAL=1
+
+# Where to show the feed: popup (floating window from the menu bar app) or browser (a Chrome tab).
+SHOW_IN=popup
