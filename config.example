@@ -1,0 +1,22 @@
+# Ultimate Brain Stimulation settings.
+# Lives at ~/.config/ultimate-brain-stimulation/config. Changes apply next time Claude starts working.
+
+# Which feed to scroll: instagram, tiktok, douyin, or rotate (next one on each new prompt).
+APP=instagram
+
+# How long to watch each video before moving to the next.
+SECONDS_PER_VIDEO=8
+
+# The browser to use. Must be Chrome or another Chromium browser (Brave, Edge).
+BROWSER="Google Chrome"
+
+# If no Claude activity is seen for this many minutes, stop scrolling.
+# Catches the case where you press Esc to interrupt Claude.
+STALE_MINUTES=10
+
+# 1 = pause the video when Claude is done. Needs Chrome's
+# View > Developer > Allow JavaScript from Apple Events turned on.
+PAUSE_ON_STOP=1
+
+# 1 = bring your terminal back to the front when Claude is done.
+RETURN_TO_TERMINAL=1

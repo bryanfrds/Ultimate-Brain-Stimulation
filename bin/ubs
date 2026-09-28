@@ -1,0 +1,366 @@
+#!/bin/bash
+# Ultimate Brain Stimulation: doomscrolls short videos while Claude Code works.
+#
+# Claude Code hooks call:  ubs start prompt   (you sent a prompt)
+#                          ubs start          (a tool just finished)
+#                          ubs stop           (Claude finished, or is waiting on you)
+# You can call:            ubs status | ubs on | ubs off | ubs reset
+set -u
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+CONFIG_FILE="${UBS_CONFIG:-$HOME/.config/ultimate-brain-stimulation/config}"
+STATE_DIR="${UBS_STATE_DIR:-$HOME/.cache/ultimate-brain-stimulation}"
+SESSIONS_DIR="$STATE_DIR/sessions"
+PID_FILE="$STATE_DIR/scroller.pid"
+LOCK_DIR="$STATE_DIR/lock"
+LOG_FILE="$STATE_DIR/log"
+
+# Defaults. The config file overrides these.
+APP=instagram            # instagram | tiktok | douyin | rotate
+SECONDS_PER_VIDEO=8
+BROWSER="Google Chrome"  # any Chromium browser with AppleScript support
+STALE_MINUTES=10         # stop if no hook has fired for this long (e.g. you pressed Esc)
+PAUSE_ON_STOP=1          # pause the video when Claude is done (needs a Chrome setting, see README)
+RETURN_TO_TERMINAL=1     # bring your terminal back to the front when Claude is done
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+DRY_RUN="${UBS_DRY_RUN:-0}"
+
+# A typo here would otherwise mean pressing keys nonstop or never going stale.
+case "$SECONDS_PER_VIDEO" in ''|*[!0-9]*|0) SECONDS_PER_VIDEO=8 ;; esac
+case "$STALE_MINUTES" in ''|*[!0-9]*|0) STALE_MINUTES=10 ;; esac
+
+mkdir -p "$SESSIONS_DIR"
+
+log() { printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$*" >> "$LOG_FILE"; }
+
+# --- apps -----------------------------------------------------------------
+
+app_url() {
+  case "$1" in
+    instagram) echo "https://www.instagram.com/reels/" ;;
+    tiktok)    echo "https://www.tiktok.com/foryou" ;;
+    douyin)    echo "https://www.douyin.com/" ;;
+  esac
+}
+
+# Text a tab's URL must contain to count as the feed.
+app_match() {
+  case "$1" in
+    instagram) echo "instagram.com/reels" ;;
+    tiktok)    echo "tiktok.com" ;;
+    douyin)    echo "douyin.com" ;;
+  esac
+}
+
+# With rotate, a new prompt moves to the next app; resuming mid-turn keeps the current one.
+pick_app() {
+  local current
+  current=$(cat "$STATE_DIR/current_app" 2>/dev/null)
+  if [ "$APP" != rotate ]; then
+    echo "$APP"
+  elif [ "$1" != prompt ] && [ -n "$current" ]; then
+    echo "$current"
+  else
+    case "$current" in
+      instagram) echo tiktok ;;
+      tiktok)    echo douyin ;;
+      *)         echo instagram ;;
+    esac
+  fi
+}
+
+# --- state ----------------------------------------------------------------
+
+# Hooks pass JSON on stdin; each Claude session is tracked as one file.
+read_session_id() {
+  local id=""
+  if [ ! -t 0 ]; then
+    id=$(jq -r '.session_id // empty' 2>/dev/null)
+  fi
+  [ -n "$id" ] || id=manual
+  printf '%s' "$id" | tr -c 'A-Za-z0-9_-' '_'
+}
+
+lock() {
+  local tries=0 owner
+  until mkdir "$LOCK_DIR" 2>/dev/null; do
+    tries=$((tries + 1))
+    owner=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+    # Only break a lock whose owner is dead (or never wrote its PID).
+    if { [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; } ||
+       { [ -z "$owner" ] && [ "$tries" -gt 50 ]; }; then
+      rm -f "$LOCK_DIR/pid"
+      rmdir "$LOCK_DIR" 2>/dev/null
+      tries=0
+    fi
+    sleep 0.1
+  done
+  echo $$ > "$LOCK_DIR/pid"
+  trap unlock EXIT
+}
+unlock() {
+  [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] || return 0
+  rm -f "$LOCK_DIR/pid"
+  rmdir "$LOCK_DIR" 2>/dev/null
+}
+
+prune_stale() { find "$SESSIONS_DIR" -type f -mmin +"$STALE_MINUTES" -delete 2>/dev/null; }
+has_sessions() { [ -n "$(ls -A "$SESSIONS_DIR" 2>/dev/null)" ]; }
+is_disabled() { [ -f "$STATE_DIR/disabled" ]; }
+
+scroller_pid() {
+  local pid
+  pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+  [ -n "$pid" ] || return 1
+  # Check the PID is still ours and not reused by another process. Right after
+  # launch the child still shows as "ubs start" until nohup execs the loop.
+  ps -p "$pid" -o command= 2>/dev/null |
+    grep -Eq "(^|/)$(basename "$SELF") (start|scroll-loop)( |$)" || return 1
+  echo "$pid"
+}
+
+# --- browser control (AppleScript) ------------------------------------------
+
+osa() {
+  if [ "$DRY_RUN" = 1 ]; then
+    log "dry-run osascript $*"
+    echo yes
+  else
+    osascript - "$@" 2>>"$LOG_FILE"
+  fi
+}
+
+# AppleScript needs the app name written into the script to know its commands,
+# so the browser name is substituted in. Strip anything that could break out.
+browser_name() { printf '%s' "$BROWSER" | tr -cd 'A-Za-z0-9 .-'; }
+
+focus_feed() {
+  local b; b=$(browser_name)
+  osa "$(app_match "$1")" "$(app_url "$1")" >/dev/null <<EOF
+on run argv
+  set feedMatch to item 1 of argv
+  set feedUrl to item 2 of argv
+  tell application "$b"
+    set found to false
+    repeat with w in windows
+      set i to 0
+      repeat with t in tabs of w
+        set i to i + 1
+        if URL of t contains feedMatch then
+          set active tab index of w to i
+          set index of w to 1
+          set found to true
+          exit repeat
+        end if
+      end repeat
+      if found then exit repeat
+    end repeat
+    if not found then
+      if (count of windows) is 0 then make new window
+      tell front window to make new tab with properties {URL:feedUrl}
+    end if
+    activate
+  end tell
+end run
+EOF
+}
+
+# Press down arrow, but only if the feed tab is what you're looking at.
+# Otherwise the key would land in your terminal or another app.
+press_next() {
+  local b; b=$(browser_name)
+  osa "$(app_match "$1")" >/dev/null <<EOF
+on run argv
+  set feedMatch to item 1 of argv
+  if application "$b" is not running then return "skip"
+  tell application "System Events" to set frontApp to name of first application process whose frontmost is true
+  if frontApp is not "$b" then return "skip"
+  tell application "$b" to set u to URL of active tab of front window
+  if u does not contain feedMatch then return "skip"
+  tell application "System Events" to key code 125
+  return "pressed"
+end run
+EOF
+}
+
+frontmost_bundle_id() {
+  osa <<'EOF'
+tell application "System Events" to get bundle identifier of first application process whose frontmost is true
+EOF
+}
+
+browser_is_front() {
+  local b; b=$(browser_name)
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ "$(osa <<EOF
+tell application "System Events" to get name of first application process whose frontmost is true
+EOF
+)" = "$b" ]
+}
+
+pause_videos() {
+  local b; b=$(browser_name)
+  osa "$(app_match "$1")" >/dev/null <<EOF
+on run argv
+  set feedMatch to item 1 of argv
+  if application "$b" is not running then return
+  tell application "$b"
+    repeat with w in windows
+      repeat with t in tabs of w
+        if URL of t contains feedMatch then
+          try
+            execute t javascript "document.querySelectorAll('video').forEach(function (v) { v.pause(); });"
+          end try
+        end if
+      end repeat
+    end repeat
+  end tell
+end run
+EOF
+}
+
+# Runs once scrolling has stopped: pause the video and hand focus back.
+# $1 is the scroller that was stopped; wait for it so its last key press
+# can't land after the pause.
+after_stop() {
+  local old="$1" app terminal n=0
+  if [ "$old" != "$$" ]; then
+    while kill -0 "$old" 2>/dev/null && [ "$n" -lt 50 ]; do
+      sleep 0.1
+      n=$((n + 1))
+    done
+  fi
+  scroller_pid >/dev/null && return 0  # a new start took over
+  app=$(cat "$STATE_DIR/current_app" 2>/dev/null)
+  [ "$PAUSE_ON_STOP" = 1 ] && [ -n "$app" ] && pause_videos "$app"
+  scroller_pid >/dev/null && return 0
+  terminal=$(cat "$STATE_DIR/terminal_app" 2>/dev/null)
+  # Only pull focus back if you're still watching; don't interrupt anything else.
+  if [ "$RETURN_TO_TERMINAL" = 1 ] && [ -n "$terminal" ] && browser_is_front; then
+    osa "$terminal" >/dev/null <<'EOF'
+on run argv
+  tell application id (item 1 of argv) to activate
+end run
+EOF
+  fi
+}
+
+# --- commands ---------------------------------------------------------------
+
+cmd_start() {
+  local reason="${1:-tool}" id app
+  id=$(read_session_id)
+  lock
+  if is_disabled; then
+    unlock
+    return 0
+  fi
+  touch "$SESSIONS_DIR/$id"
+  if scroller_pid >/dev/null; then
+    unlock
+    return 0
+  fi
+  app=$(pick_app "$reason")
+  if [ -z "$(app_url "$app")" ]; then
+    log "unknown APP '$app' in $CONFIG_FILE"
+    unlock
+    return 0
+  fi
+  echo "$app" > "$STATE_DIR/current_app"
+  nohup "$SELF" scroll-loop "$app" >/dev/null 2>&1 &
+  echo $! > "$PID_FILE"
+  log "start session=$id app=$app scroller=$!"
+  unlock
+}
+
+cmd_stop() {
+  local id pid
+  id=$(read_session_id)
+  lock
+  rm -f "$SESSIONS_DIR/$id"
+  prune_stale
+  if has_sessions; then
+    unlock
+    return 0
+  fi
+  if ! pid=$(scroller_pid); then
+    # Nothing was scrolling (e.g. Claude's idle reminder), so don't touch focus.
+    unlock
+    return 0
+  fi
+  kill "$pid" 2>/dev/null
+  rm -f "$PID_FILE"
+  log "stop session=$id scroller=$pid"
+  unlock
+  after_stop "$pid" >/dev/null 2>&1 &
+}
+
+cmd_scroll_loop() {
+  local app="$1" front
+  trap 'exit 0' TERM
+  # The terminal you just typed in is usually in front; remember it for later.
+  # Only known terminals and editors count, so another app is never mistaken for it.
+  front=$(frontmost_bundle_id)
+  case "$front" in
+    com.apple.Terminal|com.googlecode.iterm2|dev.warp.*|net.kovidgoyal.kitty|\
+    com.mitchellh.ghostty|com.github.wez.wezterm|org.alacritty|io.alacritty|\
+    com.microsoft.VSCode*|com.todesktop.*|dev.zed.Zed*)
+      echo "$front" > "$STATE_DIR/terminal_app" ;;
+  esac
+  focus_feed "$app"
+  while :; do
+    sleep "$SECONDS_PER_VIDEO" &
+    wait $!
+    # Check and give up the PID file under one lock, so a start arriving now
+    # either sees us still running or launches a fresh scroller.
+    lock
+    prune_stale
+    if ! has_sessions; then
+      [ "$(cat "$PID_FILE" 2>/dev/null)" = "$$" ] && rm -f "$PID_FILE"
+      unlock
+      break
+    fi
+    unlock
+    press_next "$app"
+  done
+  log "scroller $$ exiting: no active sessions"
+  after_stop "$$"
+}
+
+cmd_status() {
+  local pid
+  echo "config:   $CONFIG_FILE"
+  echo "app:      $APP, ${SECONDS_PER_VIDEO}s per video, browser: $BROWSER"
+  if is_disabled; then echo "enabled:  no (run 'ubs on')"; else echo "enabled:  yes"; fi
+  if pid=$(scroller_pid); then
+    echo "scrolling: yes ($(cat "$STATE_DIR/current_app" 2>/dev/null), pid $pid)"
+  else
+    echo "scrolling: no"
+  fi
+  echo "busy Claude sessions: $(ls -A "$SESSIONS_DIR" | wc -l | tr -d ' ')"
+}
+
+cmd_reset() {
+  local pid
+  lock
+  pid=$(scroller_pid) && kill "$pid" 2>/dev/null
+  rm -f "$PID_FILE" "$SESSIONS_DIR"/*
+  unlock
+  echo "Stopped and cleared."
+}
+
+case "${1:-}" in
+  start)       cmd_start "${2:-}" ;;
+  stop)        cmd_stop ;;
+  scroll-loop) cmd_scroll_loop "${2:?}" ;;
+  status)      cmd_status ;;
+  on)          rm -f "$STATE_DIR/disabled"; echo "On." ;;
+  off)         touch "$STATE_DIR/disabled"; cmd_reset >/dev/null; echo "Off." ;;
+  reset)       cmd_reset ;;
+  *)
+    echo "usage: ubs start [prompt]|stop|status|on|off|reset" >&2
+    exit 1
+    ;;
+esac
+exit 0
