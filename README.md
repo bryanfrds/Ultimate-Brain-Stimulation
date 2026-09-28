@@ -16,7 +16,7 @@ Claude Code can run a script at set moments (these are called *hooks*). This pro
 | A tool finishes (e.g. one you just approved) | Scrolling resumes if it had stopped |
 | Claude finishes, or asks for your approval | Scrolling stops, the video pauses, and your terminal comes back to the front |
 
-It presses the down arrow key, which moves to the next video on all three sites. It only presses the key when the feed tab is in front, so if you click back into your terminal, the key never reaches it.
+It presses the down arrow key to move to the next video. It only presses the key when the feed is the window in front of you (it checks the window title), so if you click back into your terminal, the key never reaches it.
 
 If you have several Claude sessions running, it keeps scrolling until all of them are done.
 
@@ -33,12 +33,10 @@ Then restart any open Claude Code sessions.
 
 The first time it runs, macOS asks for two permissions. Click **Allow** on both:
 
-1. **Your terminal controlling Chrome and System Events** (a popup).
+1. **Your terminal controlling System Events** (a popup).
 2. **Accessibility** for your terminal app, so it can press keys: System Settings → Privacy & Security → Accessibility.
 
 Log in to Instagram, TikTok, or Douyin in the browser once. Douyin login uses a QR code that you scan with the Douyin phone app.
-
-**Optional:** to have the video pause when Claude is done, turn on Chrome → View → Developer → **Allow JavaScript from Apple Events**.
 
 ## Menu bar app
 

@@ -14,8 +14,7 @@ BROWSER="Google Chrome"
 # Catches the case where you press Esc to interrupt Claude.
 STALE_MINUTES=10
 
-# 1 = pause the video when Claude is done. Needs Chrome's
-# View > Developer > Allow JavaScript from Apple Events turned on.
+# 1 = pause the video when Claude is done (TikTok and Douyin; Instagram has no pause key).
 PAUSE_ON_STOP=1
 
 # 1 = bring your terminal back to the front when Claude is done.

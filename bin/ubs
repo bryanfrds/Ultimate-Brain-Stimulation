@@ -20,7 +20,7 @@ APP=instagram            # instagram | tiktok | douyin | rotate
 SECONDS_PER_VIDEO=8
 BROWSER="Google Chrome"  # any Chromium browser with AppleScript support
 STALE_MINUTES=10         # stop if no hook has fired for this long (e.g. you pressed Esc)
-PAUSE_ON_STOP=1          # pause the video when Claude is done (needs a Chrome setting, see README)
+PAUSE_ON_STOP=1          # pause the video when Claude is done (TikTok and Douyin only)
 RETURN_TO_TERMINAL=1     # bring your terminal back to the front when Claude is done
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
@@ -41,15 +41,6 @@ app_url() {
     instagram) echo "https://www.instagram.com/reels/" ;;
     tiktok)    echo "https://www.tiktok.com/foryou" ;;
     douyin)    echo "https://www.douyin.com/" ;;
-  esac
-}
-
-# Text a tab's URL must contain to count as the feed.
-app_match() {
-  case "$1" in
-    instagram) echo "instagram.com/reels" ;;
-    tiktok)    echo "tiktok.com" ;;
-    douyin)    echo "douyin.com" ;;
   esac
 }
 
@@ -120,23 +111,27 @@ scroller_pid() {
   echo "$pid"
 }
 
-# --- browser control (AppleScript) ------------------------------------------
+# --- browser control ----------------------------------------------------------
+#
+# Nothing here sends commands to the browser by name. Other tools (including
+# other Claude sessions) run invisible "headless" copies of Chrome, and
+# `tell application "Google Chrome"` can end up talking to one of those.
+# Instead: `open` brings your real browser forward, and System Events reads
+# the title of whatever window is in front of you.
 
 osa() {
   if [ "$DRY_RUN" = 1 ]; then
     log "dry-run osascript $*"
-    echo yes
+    echo "${UBS_DRY_FRONT:-Google Chrome|Douyin TikTok Instagram}"
   else
     osascript - "$@" 2>>"$LOG_FILE"
   fi
 }
 
-# AppleScript needs the app name written into the script to know its commands,
-# so the browser name is substituted in. Strip anything that could break out.
-browser_name() { printf '%s' "$BROWSER" | tr -cd 'A-Za-z0-9 .-'; }
+browser_name() { printf '%s' "$BROWSER"; }
 
-# AppleScript "activate" from a background process is ignored on recent macOS,
-# but `open` still brings the app to the front. -a takes a name, -b a bundle id.
+# Opening an app from a background process with AppleScript "activate" is
+# ignored on recent macOS, but `open` still brings it to the front.
 bring_to_front() {
   if [ "$DRY_RUN" = 1 ]; then
     log "dry-run open $*"
@@ -145,89 +140,82 @@ bring_to_front() {
   fi
 }
 
-focus_feed() {
-  local b; b=$(browser_name)
-  osa "$(app_match "$1")" "$(app_url "$1")" >/dev/null <<EOF
-on run argv
-  set feedMatch to item 1 of argv
-  set feedUrl to item 2 of argv
-  tell application "$b"
-    set found to false
-    repeat with w in windows
-      set i to 0
-      repeat with t in tabs of w
-        set i to i + 1
-        if URL of t contains feedMatch then
-          set active tab index of w to i
-          set index of w to 1
-          set found to true
-          exit repeat
-        end if
-      end repeat
-      if found then exit repeat
-    end repeat
-    if not found then
-      if (count of windows) is 0 then make new window
-      tell front window to make new tab with properties {URL:feedUrl}
-    end if
-  end tell
-end run
-EOF
-  bring_to_front -a "$b"
+# Text the feed's window title contains (the page title, which the browser
+# puts in the window title).
+app_title() {
+  case "$1" in
+    instagram) echo "Instagram" ;;
+    tiktok)    echo "TikTok" ;;
+    douyin)    echo "抖音" ;;
+  esac
 }
 
-# Press down arrow, but only if the feed tab is what you're looking at.
-# Otherwise the key would land in your terminal or another app.
-press_next() {
-  local b; b=$(browser_name)
-  osa "$(app_match "$1")" >/dev/null <<EOF
-on run argv
-  set feedMatch to item 1 of argv
-  if application "$b" is not running then return "skip"
-  tell application "System Events" to set frontApp to name of first application process whose frontmost is true
-  if frontApp is not "$b" then return "skip"
-  tell application "$b" to set u to URL of active tab of front window
-  if u does not contain feedMatch then return "skip"
-  tell application "System Events" to key code 125
-  return "pressed"
-end run
-EOF
+# Prints "<front app name>|<front window title>".
+front_window() {
+  osa <<'OSA'
+tell application "System Events"
+  set p to first application process whose frontmost is true
+  set t to ""
+  try
+    set t to name of front window of p
+  end try
+  return (name of p) & "|" & t
+end tell
+OSA
 }
 
-frontmost_bundle_id() {
-  osa <<'EOF'
-tell application "System Events" to get bundle identifier of first application process whose frontmost is true
-EOF
+# True if the feed is what you're looking at right now.
+feed_is_front() {
+  local front; front=$(front_window)
+  [ "${front%%|*}" = "$(browser_name)" ] && case "${front#*|}" in *"$(app_title "$1")"*) true ;; *) false ;; esac
 }
 
 browser_is_front() {
-  local b; b=$(browser_name)
-  [ "$DRY_RUN" = 1 ] && return 0
-  [ "$(osa <<EOF
-tell application "System Events" to get name of first application process whose frontmost is true
-EOF
-)" = "$b" ]
+  local front; front=$(front_window)
+  [ "${front%%|*}" = "$(browser_name)" ]
 }
 
-pause_videos() {
-  local b; b=$(browser_name)
-  osa "$(app_match "$1")" >/dev/null <<EOF
+focus_feed() {
+  bring_to_front -a "$(browser_name)"
+  sleep 1
+  # Only open a new tab if the feed isn't already the tab in front.
+  feed_is_front "$1" || bring_to_front -a "$(browser_name)" "$(app_url "$1")"
+}
+
+key() {
+  osa "$1" >/dev/null <<'OSA'
 on run argv
-  set feedMatch to item 1 of argv
-  if application "$b" is not running then return
-  tell application "$b"
-    repeat with w in windows
-      repeat with t in tabs of w
-        if URL of t contains feedMatch then
-          try
-            execute t javascript "document.querySelectorAll('video').forEach(function (v) { v.pause(); });"
-          end try
-        end if
-      end repeat
-    end repeat
-  end tell
+  tell application "System Events" to key code (item 1 of argv as integer)
 end run
-EOF
+OSA
+}
+
+# Move to the next video, but only if the feed is in front. Otherwise the key
+# would land in your terminal or another app.
+press_next() {
+  local result=skip
+  if feed_is_front "$1"; then
+    key 125  # down arrow
+    result=pressed
+  fi
+  # Log only changes, so the log shows what's happening without flooding.
+  if [ "$result" != "${LAST_NEXT_RESULT:-}" ]; then
+    log "next video: $result"
+    LAST_NEXT_RESULT=$result
+  fi
+}
+
+# Space pauses on TikTok and Douyin. Instagram has no pause key, so it's left playing.
+pause_video() {
+  case "$1" in
+    tiktok|douyin) feed_is_front "$1" && key 49 ;;
+  esac
+}
+
+frontmost_bundle_id() {
+  osa <<'OSA'
+tell application "System Events" to get bundle identifier of first application process whose frontmost is true
+OSA
 }
 
 # Runs once scrolling has stopped: pause the video and hand focus back.
@@ -243,7 +231,7 @@ after_stop() {
   fi
   scroller_pid >/dev/null && return 0  # a new start took over
   app=$(cat "$STATE_DIR/current_app" 2>/dev/null)
-  [ "$PAUSE_ON_STOP" = 1 ] && [ -n "$app" ] && pause_videos "$app"
+  [ "$PAUSE_ON_STOP" = 1 ] && [ -n "$app" ] && pause_video "$app"
   scroller_pid >/dev/null && return 0
   terminal=$(cat "$STATE_DIR/terminal_app" 2>/dev/null)
   # Only pull focus back if you're still watching; don't interrupt anything else.
