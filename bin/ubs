@@ -135,6 +135,16 @@ osa() {
 # so the browser name is substituted in. Strip anything that could break out.
 browser_name() { printf '%s' "$BROWSER" | tr -cd 'A-Za-z0-9 .-'; }
 
+# AppleScript "activate" from a background process is ignored on recent macOS,
+# but `open` still brings the app to the front. -a takes a name, -b a bundle id.
+bring_to_front() {
+  if [ "$DRY_RUN" = 1 ]; then
+    log "dry-run open $*"
+  else
+    open "$@" 2>>"$LOG_FILE"
+  fi
+}
+
 focus_feed() {
   local b; b=$(browser_name)
   osa "$(app_match "$1")" "$(app_url "$1")" >/dev/null <<EOF
@@ -160,10 +170,10 @@ on run argv
       if (count of windows) is 0 then make new window
       tell front window to make new tab with properties {URL:feedUrl}
     end if
-    activate
   end tell
 end run
 EOF
+  bring_to_front -a "$b"
 }
 
 # Press down arrow, but only if the feed tab is what you're looking at.
@@ -238,11 +248,7 @@ after_stop() {
   terminal=$(cat "$STATE_DIR/terminal_app" 2>/dev/null)
   # Only pull focus back if you're still watching; don't interrupt anything else.
   if [ "$RETURN_TO_TERMINAL" = 1 ] && [ -n "$terminal" ] && browser_is_front; then
-    osa "$terminal" >/dev/null <<'EOF'
-on run argv
-  tell application id (item 1 of argv) to activate
-end run
-EOF
+    bring_to_front -b "$terminal"
   fi
 }
 
