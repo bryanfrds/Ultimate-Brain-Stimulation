@@ -128,6 +128,7 @@ final class FeedPopup: NSObject, NSWindowDelegate {
     private(set) var isShown = false
     // Closing the popup by hand keeps it closed until Claude next goes idle.
     private(set) var dismissed = false
+    var onClose: (() -> Void)?
 
     // Where the feed is: URL plus the position of the first video and of any
     // scrolling container. If none of it changes, "next" didn't move the feed.
@@ -234,6 +235,7 @@ final class FeedPopup: NSObject, NSWindowDelegate {
         webView?.evaluateJavaScript(pauseJS)
         isShown = false
         dismissed = true
+        onClose?()
     }
 
     private func scheduleAdvance() {
@@ -291,6 +293,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
+        // Closing the popup by hand also ends a "Show Popup Now" preview.
+        popup.onClose = { [weak self] in self?.previewing = false }
         statusItem.menu = menu
         tick()
         // The hooks only write files; this loop turns that into showing/hiding the popup.
