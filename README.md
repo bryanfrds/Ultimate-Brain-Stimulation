@@ -40,6 +40,17 @@ Log in to Instagram, TikTok, or Douyin in the browser once. Douyin login uses a 
 
 **Optional:** to have the video pause when Claude is done, turn on Chrome → View → Developer → **Allow JavaScript from Apple Events**.
 
+## Menu bar app
+
+A brain icon in your menu bar to turn scrolling on or off and pick the app, without editing files. The icon fills in while it's scrolling.
+
+```bash
+~/ultimate-brain-stimulation/menubar/build.sh
+open ~/Applications/"Ultimate Brain Stimulation.app"
+```
+
+Needs Apple's command line tools (`xcode-select --install`) to build. Turn on **Open at Login** in its menu to keep it there.
+
 ## Settings
 
 Edit `~/.config/ultimate-brain-stimulation/config`:
